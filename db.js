@@ -1,36 +1,86 @@
 // db.js
-import { LowSync, JSONFileSync } from 'lowdb'
+import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+dotenv.config();
 
-// Adapter ke file db.json
-const adapter = new JSONFileSync('db.json')
-const db = new LowSync(adapter)
+// Connect to MongoDB
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB connection error:', err));
 
-// Inisialisasi data kalau belum ada
-db.read()
-db.data ||= { users: [] }
+// Define User schema for storing chat IDs and credentials
+const userSchema = new mongoose.Schema({
+  chatId: { type: Number, unique: true, required: true },
+  binance: {
+    apiKey: String,
+    secret: String,
+  },
+  bybit: {
+    apiKey: String,
+    secret: String,
+  },
+  useNews:            { type: Boolean, default: false },
+  useSentimentFilter: { type: Boolean, default: false },
+  useMultiTf:         { type: Boolean, default: false },
+  defaultCex:         { type: String,  default: 'bybit' },
+  defaultRisk:        { type: Number,  default: 1     },
+  defaultTimeframe:   { type: String,  default: '1h' },
+  leverage:           { type: Number,  default: 10 },
+});
 
-/**
- * Simpan kredensial exchange (bybit/binance) untuk chatId tertentu
- * @param {number} chatId
- * @param {'binance'|'bybit'} ex
- * @param {{ apiKey: string, secret: string }} creds
- */
-export function saveApiCredentials(chatId, ex, creds) {
-  db.read()
-  let user = db.data.users.find(u => u.chatId === chatId)
-  if (!user) {
-    user = { chatId, binance: null, bybit: null }
-    db.data.users.push(user)
+// Prevent model overwrite on reload
+const User = mongoose.models.User || mongoose.model('User', userSchema);
+
+/** Save API creds or user settings */
+export async function saveApiCredentials(chatId, exchange, creds) {
+  const update = {};
+  if (exchange === 'settings') {
+    // creds is an object of settings flags
+    Object.assign(update, creds);
+  } else {
+    // exchange is 'binance' or 'bybit'
+    update[exchange] = creds;
   }
-  user[ex] = creds
-  db.write()
+  await User.updateOne(
+    { chatId },
+    { $set: update },
+    { upsert: true }
+  );
 }
 
-/**
- * Ambil semua kredensial untuk chatId, kembalikan object { binance, bybit }
- * @param {number} chatId
- */
-export function getApiCredentials(chatId) {
-  db.read()
-  return db.data.users.find(u => u.chatId === chatId) || {}
+/** Get stored API credentials and chat record */
+export async function getApiCredentials(chatId) {
+  let user = await User.findOne({ chatId }).lean();
+  if (!user) {
+    user = await User.create({ chatId });
+    user = user.toObject();
+  }
+  return {
+    binance: user.binance || {},
+    bybit: user.bybit || {},
+    settings: {
+      useNews:            user.useNews || false,
+      useSentimentFilter: user.useSentimentFilter || false,
+      useMultiTf:         user.useMultiTf || false,
+      leverage:           user.leverage || 10,
+      defaultCex:         user.defaultCex || 'bybit',
+      defaultRisk:        user.defaultRisk || 1,
+      defaultTimeframe:   user.defaultTimeframe || '1h',
+    },
+  };
+}
+
+/** Add chatId to users collection */
+export async function addChatId(chatId) {
+  await User.updateOne(
+    { chatId },
+    { $setOnInsert: { chatId } },
+    { upsert: true }
+  );
+}
+
+/** Get all chat IDs for broadcasting */
+export async function getAllChatIds() {
+  const users = await User.find({}, 'chatId').lean();
+  return users.map(u => u.chatId);
 }
