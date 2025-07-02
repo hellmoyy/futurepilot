@@ -35,21 +35,23 @@ export function calcSLTP(entry, side, atr) {
 }
 
 /**
- * Calculate position size for futures based on risk and leverage
- * @param {number} balance - total available margin (USDT)
- * @param {number} entry - entry price
- * @param {number} stopLoss - stop loss price
- * @param {number} riskPct - risk percentage per trade (e.g. 0.01 for 1%)
- * @param {number} leverage - leverage multiplier (e.g. 10 for 10x). Defaults to 1.
- * @returns {number} - position size in contracts
- *
- * TODO: Make sure all calls to calcQuantity pass leverage from user settings (e.g. creds.settings.leverage), not default 10.
+ * Calculate position size for futures USDT-perpetual based on risk and leverage.
+ * @param {number} balance   Free balance USDT
+ * @param {number} entry     Entry price (not used in futures calculation)
+ * @param {number} stopLoss  Stop loss price (not used in futures calculation)
+ * @param {number} riskPct   Risk percentage per trade (e.g. 0.01 for 1%)
+ * @param {number} leverage  Leverage multiplier (e.g. 10 for 10x). Defaults to 1.
+ * @returns {number}         Position size in contracts (integer)
  */
 export function calcQuantity(balance, entry, stopLoss, riskPct, leverage = 1) {
-  const riskAmount = balance * leverage * riskPct;    // e.g. 1190.91 * 10 * 0.01 = 119.09 USDT
-  const unitRisk   = Math.abs(entry - stopLoss);      // e.g. |107161.50 - 107446.32| = 284.82
-  if (unitRisk <= 0) return 0;
-  return riskAmount / unitRisk;                       // ~0.0418 contracts
+  // futures (USDT perpetual): contracts = (balance * riskPct * leverage) / contractSize
+  const riskAmount   = balance * riskPct;        // USDT at risk
+  const notional     = riskAmount * leverage;    // USDT notional
+  const contractSize = 1;                        // USD per contract
+  let qtyContracts   = notional / contractSize;  // number of contracts
+  // round down to nearest whole contract
+  qtyContracts = Math.floor(qtyContracts);
+  return qtyContracts;
 }
 
 export function confirmSignal(trend, high, low, close, atrValue) {
@@ -89,14 +91,17 @@ try {
   console.error('RF model load failed; ML will be disabled:', e);
 }
 
-// Load SVM model
+// Load SVM model (optional)
 let svmModel = null;
 try {
-  const svmModelJson = JSON.parse(fs.readFileSync(path.join(__dirname, 'svm_model.json')));
+  const svmPath = path.join(__dirname, 'svm_model.json');
+  const svmJson = fs.readFileSync(svmPath, 'utf-8');
+  const svmModelJson = JSON.parse(svmJson);
   svmModel = new SVM();
   svmModel.fromJSON(svmModelJson);
-} catch (e) {
-  console.warn('SVM model not found or failed to load; falling back to RF only.', e);
+  console.log('✅ Loaded SVM model from', svmPath);
+} catch (err) {
+  console.warn('⚠️ SVM model not found or failed to load; falling back to RF only.', err);
 }
 
 /**

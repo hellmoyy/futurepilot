@@ -12,7 +12,9 @@ const UserSchema = new Schema({
     useSentimentFilter: { type: Boolean, default: false },  // Sentiment off
     useMultiTf: { type: Boolean, default: false },          // Multi-TF off
     leverage: { type: Number, default: 10 },                 // default 10× leverage
-    defaultTimeframe: { type: String, default: '1h' }
+    defaultTimeframe: { type: String, default: '1h' },
+    useMlIntervention: { type: Boolean, default: false },
+    mlThreshold:       { type: Number,  default: 0.8 }
   }
 });
 

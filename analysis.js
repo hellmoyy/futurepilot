@@ -2,7 +2,7 @@
 import ccxt from 'ccxt';
 import { ATR, EMA, RSI, Stochastic } from 'technicalindicators';
 import { OpenAI } from 'openai';
-import { getApiCredentials } from './db.js';
+import { getApiCredentials } from './db.server.js';
 
 /**
  * Analyze chart data with OHLCV from exchange
@@ -130,10 +130,12 @@ export async function generateDetailedAnalysis(
     const apiCreds = cex === 'binance' ? binance : bybit;
 
     // Use dynamic CEX client for live price
-    const clientX = new ccxt[cex]({
-      apiKey: apiCreds.apiKey,
-      secret: apiCreds.secret
-    });
+    let clientX;
+    if (cex === 'binance') {
+      clientX = new ccxt.binance();
+    } else {
+      clientX = new ccxt.bybit({ options: { defaultType: 'swap', defaultSettle: 'USDT' } });
+    }
     const ticker = await clientX.fetchTicker(symbol);
     const current = ticker.last;
     let liveScenario = '';
