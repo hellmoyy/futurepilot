@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 
 import crypto from 'crypto';
 import mongoose from 'mongoose';
-import { getSubscriptionByInvoice, getSubscriptionByTransaction, saveSubscription, getSubscription } from '../../../db.server.js';
+import { getSubscriptionByTransaction, saveSubscription } from '../../../db.server.js';
 
 const bot = new TelegramBot(process.env.BOT_TOKEN);
 
