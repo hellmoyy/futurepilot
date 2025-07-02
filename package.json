@@ -9,9 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest --detectOpenHandles --forceExit",
-    "start": "node bot.js",
-    "start": "node print-railway-ip.js"
-    
+     "start": "node bot.js"
   },
   "dependencies": {
     "@tensorflow/tfjs-node": "^4.22.0",
