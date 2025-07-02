@@ -10,7 +10,8 @@
     "lint": "next lint",
     "test": "jest --detectOpenHandles --forceExit",
     "start": "node bot.js",
-    "postinstall": "node print-railway-ip.js"
+    "start": "node print-railway-ip.js"
+    
   },
   "dependencies": {
     "@tensorflow/tfjs-node": "^4.22.0",
