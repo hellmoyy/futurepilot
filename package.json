@@ -9,7 +9,7 @@
     "start": "next start",
     "lint": "next lint",
     "test": "jest --detectOpenHandles --forceExit",
-     "start": "node bot.js",
+    "start": "node bot.js",
     "postinstall": "node print-railway-ip.js"
   },
   "dependencies": {
