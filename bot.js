@@ -835,13 +835,34 @@ bot.on('callback_query', async (query) => {
 
         // Generate a short execution ID and store context
         const execId = `${chatId}_${Date.now()}`;
-        // Initialize execContext map if needed
+        // (use creds from outer scope)
+        let balanceEt = 0;
+        try {
+          const clientBal = new ccxt[useCex]({
+            apiKey: creds[useCex].apiKey,
+            secret: creds[useCex].secret,
+            defaultType: useCex === 'bybit' ? 'swap' : 'future',
+            enableRateLimit: true,
+            ...(useCex === 'bybit' ? { options: { defaultSettle: 'USDT' } } : {})
+          });
+          await clientBal.loadMarkets();
+          const balanceInfo = await clientBal.fetchBalance({ type: 'future' });
+          balanceEt = balanceInfo.free.USDT;
+        } catch (e) {
+          console.warn('Failed to fetch balance for quantity calculation:', e.message);
+        }
+        const riskPctEt = (creds.settings.defaultRisk !== undefined ? creds.settings.defaultRisk : 1) / 100;
+        const leverageEt = creds.settings.leverage || 10;
+        const marginEt = balanceEt * riskPctEt;
+        const notionalEt = marginEt * leverageEt;
+        const qtyEt = notionalEt / entry; // entry is price
+        // Store updated context
         tempStore[chatId].execContext = tempStore[chatId].execContext || {};
         tempStore[chatId].execContext[execId] = {
           useCex,
           side: trend === 'bullish' ? 'long' : 'short',
           symbol,
-          entry: entry.toFixed(2),
+          entry: qtyEt.toFixed(3),  // quantity in SOL
           sl: sl.toFixed(2),
           tp: tp.toFixed(2)
         };
@@ -860,7 +881,7 @@ bot.on('callback_query', async (query) => {
         tempStore[chatId] = store;
 
         // Estimasi eksekusi
-        let balanceEt = 0, marginEt = 0, positionEt = 0, profitEt = 0, lossEt = 0;
+        let positionEt = 0, profitEt = 0, lossEt = 0;
         try {
           const estClient = new ccxt[useCex]({
             apiKey: creds[useCex].apiKey,
@@ -872,9 +893,7 @@ bot.on('callback_query', async (query) => {
           });
           const balInfo = await estClient.fetchBalance({ type: 'future' });
           balanceEt = balInfo.free.USDT;
-          const riskPctEt = (creds.settings.defaultRisk !== undefined ? creds.settings.defaultRisk : 1) / 100;
-          const leverageEt = creds.settings.leverage || 10;
-          marginEt = balanceEt * riskPctEt;
+          // Use marginEt and leverageEt from outer scope (already declared)
           positionEt = marginEt * leverageEt;
           profitEt = positionEt * ((tp - entry) / entry);
           lossEt = positionEt * ((entry - sl) / entry);
@@ -894,7 +913,7 @@ bot.on('callback_query', async (query) => {
           `• Leverage: ${creds.settings.leverage || 10}×\n` +
           `• Total Posisi: ${positionEt.toFixed(2)} USDT\n` +
           `• Profit @TP: ${profitEt.toFixed(2)} USDT\n` +
-          `• Loss @SL: ${lossEt.toFixed(2)} USDT` +
+          `• Loss @SL: - ${lossEt.toFixed(2)} USDT` +
           formatFooter('info', 'Gunakan “Lihat Detail” untuk info lengkap.');
 
         // Show summary with "Lihat Detail" button
@@ -987,6 +1006,13 @@ bot.on('callback_query', async (query) => {
           );
         }
         const balance = (await client.fetchBalance({ type: 'future' })).free.USDT;
+        if (!balance || balance < 1) {
+          await bot.sendMessage(chatId,
+            '⚠️ Saldo USDT di wallet futures kamu kosong atau kurang dari minimum. ' +
+            'Silakan transfer USDT ke wallet futures sebelum entry.'
+          );
+          return;
+        }
         // Use per-user risk percentage
         const riskPct = (creds.settings.defaultRisk !== undefined ? creds.settings.defaultRisk : 1) / 100;
         const leverage = (creds.settings.leverage) || 10;
@@ -1059,49 +1085,88 @@ bot.on('callback_query', async (query) => {
       if (creds.settings.defaultCex === 'binance') {
         try {
           const { side, symbol } = ctx;
-          // Pastikan simbol tanpa slash untuk Binance
+          // Always treat ctx.entry as price, never as qty!
           const symbolNoSlash = symbol.replace('/', '');
+          // Patch: Inisialisasi ccxt.binance dengan opsi sesuai instruksi
           const client = new ccxt.binance({
             apiKey: creds.binance.apiKey,
             secret: creds.binance.secret,
-            defaultType: 'future',
             enableRateLimit: true,
+            options: { defaultType: 'future' }
           });
-          await client.loadMarkets();
+          // Patch: loadMarkets(true)
+          await client.loadMarkets(true);
           const market = client.market(symbolNoSlash);
-          const ticker = await client.fetchTicker(market.symbol);
+          // Patch: log market meta
+          console.log('Market meta:', market);
+          const ticker = await client.fetchTicker(symbolNoSlash);
           const price = ticker.last;
-          // Perhitungan quantity mirip Bybit
           const balance = (await client.fetchBalance({ type: 'future' })).free.USDT;
-          const riskPct = (creds.settings.defaultRisk || 1) / 100;
+          const riskPct = (creds.settings.defaultRisk !== undefined ? creds.settings.defaultRisk : 1) / 100;
           const leverage = creds.settings.leverage || 10;
           const riskAmount = balance * riskPct;
           const notional = riskAmount * leverage;
           let qty = notional / price;
-          const minQty = market.limits.amount.min || 0.001;
+          // Patch: Gunakan market meta hasil log untuk precision/limits
           const step = market.precision.amount || 0.001;
+          const minQty = market.limits.amount.min || step;
           qty = Math.floor(qty / step) * step;
           if (qty < minQty) qty = minQty;
-          qty = parseFloat(qty.toFixed(3)); // biar nggak error precision
-
+          qty = parseFloat(qty.toFixed(6)); // full precision untuk Binance
+          // === [MINIMUM NOTIONAL CHECK] ===
+          const minNotional = market.limits.cost && market.limits.cost.min ? market.limits.cost.min : 5;
+          if (qty * price < minNotional) {
+            await bot.sendMessage(chatId,
+              `⚠️ Gagal eksekusi: Total order di bawah minimum Binance (${minNotional} USDT).` +
+              `\nQty: ${qty} × Price: ${price} = ${qty * price} USDT`
+            );
+            return;
+          }
+          // === [LOG ORDER PARAMS BEFORE EXECUTION] ===
+          console.log('Futures USDT balance:', balance);
+          console.log('Order params:', {
+            symbol: symbolNoSlash,
+            side: side === 'long' ? 'buy' : 'sell',
+            qty,
+            price,
+            minQty,
+            notional: qty * price
+          });
+          if (!qty || qty < minQty) {
+            await bot.sendMessage(chatId,
+              `⚠️ Gagal eksekusi: QTY terlalu kecil. Periksa saldo, risiko, leverage, dan minimum Binance.`
+            );
+            return;
+          }
+          // Set leverage before order
+          await client.setLeverage(leverage, symbolNoSlash);
+          // Tambahkan set margin mode ke cross (patch)
+          try {
+            await client.setMarginMode('cross', symbolNoSlash);
+            console.log('[Binance] Set margin mode: cross for', symbolNoSlash);
+          } catch (e) {
+            console.warn('Set margin mode gagal:', e.message);
+          }
           // 1. Order market entry
+          // Use lowercase order type to ensure futures execution
           const order = await client.createOrder(
-            market.symbol,
-            'MARKET',
+            symbolNoSlash,
+            'market',
             side === 'long' ? 'buy' : 'sell',
             qty
-            // Tidak pakai params (hapus reduceOnly dan timeInForce)
           );
+          console.log('Futures USDT balance:', balance);
+          console.log('Binance client defaultType:', client.options.defaultType);
           const posUSD = qty * price;
           await bot.sendMessage(chatId,
             `✅ Order futures ${side.toUpperCase()} di Binance berhasil!\n` +
-            `• Symbol: ${market.symbol}\n` +
-            `• Qty: ${qty}\n` +
+            `• Symbol: ${symbolNoSlash}\n` +
+            `• Qty (coins): ${qty}\n` +
+            `• Entry price: ${price} USDT\n` +
             `• Total Posisi: ${posUSD.toFixed(2)} USDT\n` +
             `• Order ID: ${order.id}`
           );
-          console.log('[Binance Order] Entry:', { symbol: market.symbol, side, qty, price });
-
+          console.log('[Binance Order] Entry:', { symbol: symbolNoSlash, side, qty, price });
           // 2. Auto set SL/TP jika ada ctx.sl/tp
           if (ctx.sl) {
             try {
@@ -1111,7 +1176,7 @@ bot.on('callback_query', async (query) => {
                 timeInForce: 'GTC'
               };
               await client.createOrder(
-                market.symbol,
+                symbolNoSlash,
                 'STOP_MARKET',
                 side === 'long' ? 'sell' : 'buy',
                 qty,
@@ -1119,7 +1184,7 @@ bot.on('callback_query', async (query) => {
                 params
               );
               await bot.sendMessage(chatId, `🛡️ Stop Loss set at ${ctx.sl}`);
-              console.log('[Binance Order] SL params:', { ...params, side: side === 'long' ? 'sell' : 'buy' });
+              console.log('[Binance Order] SL params:', { ...params, side: side === 'long' ? 'sell' : 'buy', symbol: symbolNoSlash });
             } catch (err) {
               console.error('Binance SL error:', err);
               await bot.sendMessage(chatId, `⚠️ Gagal set Stop Loss Binance: ${err.message}`);
@@ -1133,7 +1198,7 @@ bot.on('callback_query', async (query) => {
                 timeInForce: 'GTC'
               };
               await client.createOrder(
-                market.symbol,
+                symbolNoSlash,
                 'TAKE_PROFIT_MARKET',
                 side === 'long' ? 'sell' : 'buy',
                 qty,
@@ -1141,7 +1206,7 @@ bot.on('callback_query', async (query) => {
                 params
               );
               await bot.sendMessage(chatId, `🎯 Take Profit set at ${ctx.tp}`);
-              console.log('[Binance Order] TP params:', { ...params, side: side === 'long' ? 'sell' : 'buy' });
+              console.log('[Binance Order] TP params:', { ...params, side: side === 'long' ? 'sell' : 'buy', symbol: symbolNoSlash });
             } catch (err) {
               console.error('Binance TP error:', err);
               await bot.sendMessage(chatId, `⚠️ Gagal set Take Profit Binance: ${err.message}`);
@@ -1154,11 +1219,9 @@ bot.on('callback_query', async (query) => {
           return;
         }
       } else {
-        // Bybit order logic (existing code)
+        // Bybit branch: always calculate QTY as (risk x leverage) / price, never use ctx.entry as qty!
         const { side, symbol } = ctx;
-        // Normalize symbol for Bybit futures
         const symbolNoSlash = symbol.replace('/', '');
-        // Initialize Bybit futures client
         const client = new ccxt.bybit({
           apiKey: creds.bybit.apiKey,
           secret: creds.bybit.secret,
@@ -1167,53 +1230,35 @@ bot.on('callback_query', async (query) => {
           options: { defaultSettle: 'USDT' },
         });
         await client.loadMarkets();
-        // Set margin mode & leverage
         try {
           await client.setMarginMode('isolated', symbolNoSlash);
           await client.setLeverage(creds.settings.leverage || 10, symbolNoSlash);
         } catch {}
-
-        // Dynamically handle contract size, precision, and minimum quantity per market
-        const balance = (await client.fetchBalance({ type: 'future' })).free.USDT;
-        const riskPct = (creds.settings.defaultRisk || 1) / 100;
-        const leverage = creds.settings.leverage || 10;
-        const riskAmount = balance * riskPct;
-        const notional = riskAmount * leverage;
         const market = client.market(symbolNoSlash);
         const ticker = await client.fetchTicker(symbolNoSlash);
         const price = ticker.last;
-        let rawQty = notional / (price * (market.contractSize || 1));
-        // Enforce quantity in contracts, not underlying units
-        const { limits } = market;
+        const balance = (await client.fetchBalance({ type: 'future' })).free.USDT;
+        const riskPct = (creds.settings.defaultRisk !== undefined ? creds.settings.defaultRisk : 1) / 100;
+        const leverage = creds.settings.leverage || 10;
+        const riskAmount = balance * riskPct;
+        const notional = riskAmount * leverage;
         const contractSize = market.contractSize || 1;
-        // Determine step and min in contract units
-        const stepUnderlying = limits.amount?.step || market.precision?.amount || 1;
-        const minUnderlying = limits.amount.min;
+        let rawQty = notional / (price * contractSize);
+        const stepUnderlying = market.precision.amount || 1;
+        const minUnderlying = market.limits.amount.min || stepUnderlying;
         const stepContracts = stepUnderlying / contractSize;
         const minContracts = Math.ceil(minUnderlying / contractSize);
-        // rawQty is in contract units already
         let qtyContracts = Math.floor(rawQty / stepContracts) * stepContracts;
         if (isNaN(qtyContracts) || qtyContracts < minContracts) {
           qtyContracts = minContracts;
         }
-        // Optionally clamp maxContracts if needed
-        console.log(`[Order Debug] contractSize=${contractSize}, stepContracts=${stepContracts}, minContracts=${minContracts}, qtyContracts=${qtyContracts}`);
-        // Round to integer contract count
-        const qty = Math.round(qtyContracts);
-        console.log(`[Order Debug] finalQtyContracts=${qty}`);
-        if (!qty || qty < minContracts) {
+        const finalQty = Math.round(qtyContracts);
+        if (!finalQty || finalQty < minContracts) {
           await bot.sendMessage(chatId,
-            `⚠️ Gagal eksekusi: qty tidak valid atau di bawah minimum (${qty}). ` +
-            `Pastikan risiko, leverage, dan saldo mencukupi.`
+            `⚠️ Gagal eksekusi: QTY terlalu kecil. Periksa saldo, risiko, leverage, dan minimum Bybit.`
           );
           return;
         }
-        const finalQty = qty;
-        console.log(`[Order Debug] finalQty after contract enforcement=${finalQty}`);
-
-        // Detect swap/future/contract type for param handling
-        const isSwap = market.type === 'swap' || market.future || market.contract;
-
         // Place market order using qty (contracts)
         const sideParam = side === 'long' ? 'buy' : 'sell';
         try {
@@ -1227,20 +1272,20 @@ bot.on('callback_query', async (query) => {
           );
           // Calculate and display total position size in USDT
           const positionUsd = finalQty * contractSize * price;
-          console.log('[Order Info] Total position in USDT:', positionUsd);
           await bot.sendMessage(chatId,
             `✅ Order futures ${side.toUpperCase()} di Bybit berhasil!\n` +
             `• Symbol: ${symbol}\n` +
             `• Qty (contracts): ${finalQty}\n` +
+            `• Entry price: ${price} USDT\n` +
             `• Total Posisi: ${positionUsd.toFixed(2)} USDT\n` +
             `• Order ID: ${order.id}`
           );
           // Place separate conditional orders for SL and TP using stop and takeProfit types
           const slPrice = ctx.sl ? parseFloat(ctx.sl) : null;
           const tpPrice = ctx.tp ? parseFloat(ctx.tp) : null;
+          const isSwap = market.type === 'swap' || market.future || market.contract;
           if (slPrice) {
             try {
-              // Construct params for SL
               const params = {
                 stopPrice: slPrice,
                 reduceOnly: true,
@@ -1249,7 +1294,7 @@ bot.on('callback_query', async (query) => {
                 positionIdx: 0,
               };
               if (isSwap) {
-                params.triggerDirection = side === 'long' ? 2 : 1; // 2: price falls below for long, 1: price rises above for short
+                params.triggerDirection = side === 'long' ? 2 : 1;
               }
               await client.createOrder(
                 symbolNoSlash,
@@ -1271,7 +1316,6 @@ bot.on('callback_query', async (query) => {
           }
           if (tpPrice) {
             try {
-              // Construct params for TP
               const params = {
                 stopPrice: tpPrice,
                 reduceOnly: true,
@@ -1280,7 +1324,7 @@ bot.on('callback_query', async (query) => {
                 positionIdx: 0,
               };
               if (isSwap) {
-                params.triggerDirection = side === 'long' ? 1 : 2; // 1: price rises above for long, 2: price falls below for short
+                params.triggerDirection = side === 'long' ? 1 : 2;
               }
               await client.createOrder(
                 symbolNoSlash,
@@ -1333,11 +1377,24 @@ bot.on('callback_query', async (query) => {
         // fallback: no positions
         allPositions = [];
       }
+      // [PATCH] Debug: print allPositions to console
+      console.log('[DEBUG] Binance Positions:', allPositions);
       // Filter only positions with non-zero contracts
       const openPositions = allPositions.filter(p => p.contracts && parseFloat(p.contracts) > 0);
+      // PATCH: Jika openPositions kosong, cek saldo futures untuk debug
       if (!openPositions.length) {
+        try {
+          const bal = (await client.fetchBalance({ type: 'future' })).free.USDT;
+          if (bal > 1) {
+            await bot.sendMessage(chatId, `${EMOJI.info} Tidak ada posisi aktif, tapi saldo futures kamu: ${bal} USDT. Jika baru entry, tunggu beberapa detik lalu /dashboard ulang.`);
+          } else {
+            await bot.sendMessage(chatId, `${EMOJI.info} Tidak ada posisi aktif saat ini.`);
+          }
+        } catch (e) {
+          await bot.sendMessage(chatId, `${EMOJI.warn} Tidak bisa cek saldo futures Binance: ${e.message}`);
+        }
         liveTrades[chatId] = [];
-        return bot.sendMessage(chatId, `${EMOJI.info} Tidak ada posisi aktif saat ini.`);
+        return;
       }
       // Update liveTrades for tracking
       liveTrades[chatId] = openPositions.map(p => ({
@@ -1768,13 +1825,16 @@ bot.on('message', async (msg) => {
             [
               { text: `💠 Default CEX: ${defaultCex.toUpperCase()}`, callback_data: 'setting|default_cex' }
             ],
-            [{ text: `⚙️ Risk %: ${riskPct}%`, callback_data: 'setting|risk' }],
-            [{ text: `📰 News: ${useNews ? 'On' : 'Off'}`, callback_data: 'setting|news' }],
-            [{ text: `🔔 Sentiment Filter: ${useSent ? 'On' : 'Off'}`, callback_data: 'setting|sentiment' }],
-            [{ text: `🔄 Multi-TF: ${useMtf ? 'On' : 'Off'}`, callback_data: 'setting|multitf' }],
-            [{ text: `🤖 Machine Learning Intervention: ${useMl ? 'On' : 'Off'}`, callback_data: 'setting|ml_intervention' }],
+             [{ text: `==== CEX Setting ====`, callback_data: 'setting|botx'}],
+            [{ text: `⚙️ Entry Size %: ${riskPct}%`, callback_data: 'setting|risk' }],
+            [{ text: `⚡ Leverage: ${leverage}×`, callback_data: 'setting|leverage' }],
             [{ text: `🔔 Threshold PnL: ${thresholdPct}%`, callback_data: 'setting|threshold' }],
-            [{ text: `⚡ Leverage: ${leverage}×`, callback_data: 'setting|leverage' }]
+            [{ text: `==== Trading Setting ====`, callback_data: 'setting|botx'}],
+            [{ text: `🔔 Sentiment Filter: ${useSent ? 'On' : 'Off'}`, callback_data: 'setting|sentiment' }],
+            [{ text: `🔄 Konfirmasi Multi-TF: ${useMtf ? 'On' : 'Off'}`, callback_data: 'setting|multitf' }],
+            [{ text: `🤖 AI Intervention: ${useMl ? 'On' : 'Off'}`, callback_data: 'setting|ml_intervention' }],
+            [{ text: `📰 News Update: ${useNews ? 'On' : 'Off'}`, callback_data: 'setting|news' }]
+            
           ]
         }
       };
