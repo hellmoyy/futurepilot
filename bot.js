@@ -44,6 +44,62 @@ const DEFAULT_PNL_INTERVAL = 30000;
 // Temporary store for mapping user to file, symbols, and execution contexts
 const tempStore = {};
 
+// ================= SETTINGS MENU FUNCTION =================
+async function showSettingsMenu(chatId) {
+  const creds = await getApiCredentials(chatId);
+  const riskPct = creds.settings.defaultRisk !== undefined ? creds.settings.defaultRisk : 1;
+  const useNews    = creds.settings.useNews === true;
+  const useSent    = creds.settings.useSentimentFilter === true;
+  const useMtf     = creds.settings.useMultiTf === true;
+  const leverage   = creds.settings.leverage || 10;
+  const hasBybit   = Boolean(creds.bybit?.apiKey);
+  const hasBinance = Boolean(creds.binance?.apiKey);
+  const defaultCex = creds.settings.defaultCex || 'bybit';
+  const useMl      = creds.settings.useMlIntervention === true;
+  const thresholdPct = creds.settings.thresholdPct !== undefined ? creds.settings.thresholdPct : 5;
+  const inlineSettings = {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: `💠 Default CEX: ${defaultCex.toUpperCase()}`, callback_data: 'setting|default_cex' }
+        ],
+        [
+          { text: hasBybit ? '✅ Bybit API' : '🔑 Set Bybit API',   callback_data: 'setting|api_bybit' },
+          { text: hasBinance ? '✅ Binance API' : '🔑 Set Binance API', callback_data: 'setting|api_binance' }
+        ],
+
+      ...(hasBybit
+        ? [[{ text: '❌ Disconnect Bybit', callback_data: 'setting|disconnect_bybit' }]]
+        : []),
+      ...(hasBinance
+        ? [[{ text: '❌ Disconnect Binance', callback_data: 'setting|disconnect_binance' }]]
+        : []),
+         [{ text: `==== CEX Setting ====`, callback_data: 'setting|botx'}],
+        [{ text: `⚙️ Entry Size %: ${riskPct}%`, callback_data: 'setting|risk' }],
+        [{ text: `⚡ Leverage: ${leverage}×`, callback_data: 'setting|leverage' }],
+        [{ text: `🔔 Threshold PnL: ${thresholdPct}%`, callback_data: 'setting|threshold' }],
+        [{ text: `==== Trading Setting ====`, callback_data: 'setting|botx'}],
+        [{ text: `🔔 Sentiment Filter: ${useSent ? 'On' : 'Off'}`, callback_data: 'setting|sentiment' }],
+        [{ text: `🔄 Konfirmasi Multi-TF: ${useMtf ? 'On' : 'Off'}`, callback_data: 'setting|multitf' }],
+        [{ text: `🤖 AI Intervention: ${useMl ? 'On' : 'Off'}`, callback_data: 'setting|ml_intervention' }],
+        [{ text: `📰 News Update: ${useNews ? 'On' : 'Off'}`, callback_data: 'setting|news' }]
+      ]
+    }
+  };
+
+  return bot.sendMessage(
+    chatId,
+    '🔧 Pengaturan trading-mu:\n' +
+    '_Atur preferensi risiko, filter berita, dan strategi otomatis di bawah ini._\n\n' +
+    '⚠️ _Trading berisiko tinggi. Pastikan setting sudah sesuai profil kamu._',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: inlineSettings.reply_markup
+    }
+  );
+}
+// =========================================================
+
 // Number of history entries per page
 const HISTORY_PAGE_SIZE = 10;
 
@@ -333,26 +389,35 @@ bot.onText(/\/start/, async (msg) => {
 
   // Send main menu
   await bot.sendMessage(chatId,
-    `👋 Selamat datang di FuturePilot!\nPilih menu utama:`,
+    `
+👋 Selamat datang di FuturePilot Bot!
+	Gunakan tombol menu di bawah untuk mulai:
+
+	•	/dashboard: Lihat saldo & posisi
+	•	/trade: Analisa & eksekusi
+	•	/settings: Atur API & preferensi
+	•	/help: Panduan & tutorial
+
+Kirim /help untuk info lengkap`,
     replyKeyboard
   );
   // CEX setup inline buttons under /start
-  const cexInline = {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: hasBybit   ? '✅ Bybit API'   : '🔑 Set Bybit API',   callback_data: 'setting|api_bybit' },
-          { text: hasBinance ? '✅ Binance API' : '🔑 Set Binance API', callback_data: 'setting|api_binance' }
-        ],
-        [
-          { text: `💠 Default CEX: ${defaultCex.toUpperCase()}`, callback_data: 'setting|default_cex' }
-        ],
-        ...(hasBybit   ? [[{ text: '❌ Disconnect Bybit',   callback_data: 'setting|disconnect_bybit'   }]] : []),
-        ...(hasBinance ? [[{ text: '❌ Disconnect Binance', callback_data: 'setting|disconnect_binance' }]] : [])
-      ]
-    }
-  };
-  await bot.sendMessage(chatId, '🔧 CEX Configuration:', cexInline);
+  // const cexInline = {
+  //   reply_markup: {
+  //     inline_keyboard: [
+  //       [
+  //         { text: hasBybit   ? '✅ Bybit API'   : '🔑 Set Bybit API',   callback_data: 'setting|api_bybit' },
+  //         { text: hasBinance ? '✅ Binance API' : '🔑 Set Binance API', callback_data: 'setting|api_binance' }
+  //       ],
+  //       [
+  //         { text: `💠 Default CEX: ${defaultCex.toUpperCase()}`, callback_data: 'setting|default_cex' }
+  //       ],
+  //       ...(hasBybit   ? [[{ text: '❌ Disconnect Bybit',   callback_data: 'setting|disconnect_bybit'   }]] : []),
+  //       ...(hasBinance ? [[{ text: '❌ Disconnect Binance', callback_data: 'setting|disconnect_binance' }]] : [])
+  //     ]
+  //   }
+  // };
+  // await bot.sendMessage(chatId, '🔧 CEX Configuration:', cexInline);
 });
 // Command /dashboard - show user dashboard summary
 // Command /dashboard - show user dashboard summary
@@ -455,15 +520,26 @@ bot.onText(/\/help|❔ Help/, (msg) => {
     await ensurePro(chatId, bot, async () => { allowed = true; });
     if (!allowed) return;
     const helpMsg = `
-📖 *Daftar Command*:
-/start – Tampilkan menu utama
-/dashboard – Tampilkan ringkasan dashboard
-/settings – Atur preferensi (risiko, leverage, CEX, dll.)
-/track – Mulai memantau live PnL
-/stoptrack – Hentikan live PnL tracking
-/connect_bybit <API_KEY> <SECRET> – Sambung Bybit
-/connect_binance <API_KEY> <SECRET> – Sambung Binance
-Kirim chart dengan caption "ETH/USDT" atau biarkan bot deteksi otomatis.
+📖 *Panduan & Bantuan FuturePilot Bot*
+
+🔗 *Dokumentasi Lengkap* 
+https://docs.futurepilotbot.com
+
+🎬 *Tutorial Penggunaan Bot* 
+https://futurepilotbot.com/tutorial
+
+🔑 *Cara Connect CEX (Bybit/Binance)*
+https://futurepilotbot.com/connect-cex
+
+🚀 *Penjelasan Fitur Bot*
+https://futurepilotbot.com/features
+
+------------------
+
+Jika masih ada pertanyaan,
+hubungi support: @FPilotSupport
+
+_Catatan: ⚠️ Trading berisiko tinggi. Bot hanya alat bantu, Pastikan paham resiko nya sebelum memulai._
     `;
     bot.sendMessage(chatId, helpMsg, { parse_mode: 'Markdown' });
   })();
@@ -913,7 +989,7 @@ bot.on('callback_query', async (query) => {
           `• Leverage: ${creds.settings.leverage || 10}×\n` +
           `• Total Posisi: ${positionEt.toFixed(2)} USDT\n` +
           `• Profit @TP: ${profitEt.toFixed(2)} USDT\n` +
-          `• Loss @SL: - ${lossEt.toFixed(2)} USDT` +
+          `• Loss @SL: -${lossEt.toFixed(2)} USDT` +
           formatFooter('info', 'Gunakan “Lihat Detail” untuk info lengkap.');
 
         // Show summary with "Lihat Detail" button
@@ -1587,7 +1663,7 @@ bot.on('callback_query', async (query) => {
           // Toggle ML intervention flag
           const newMl = !creds.settings.useMlIntervention;
           await saveApiCredentials(chatId, 'settings', { ...creds.settings, useMlIntervention: newMl });
-          await bot.sendMessage(chatId, `🤖 ML Intervention ${newMl ? 'diaktifkan' : 'dinonaktifkan'}.`);
+          await bot.sendMessage(chatId, `🤖 AI Intervention ${newMl ? 'diaktifkan' : 'dinonaktifkan'}.`);
           // Let the inlineKeyboard update below handle UI refresh
           break;
 
@@ -1803,53 +1879,8 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId,
         '🎯 Kirim chart kamu dengan caption "ETH/USDT" atau biarkan bot deteksi otomatis.'
       );
-    case '⚙️ Settings': {
-      const creds = await getApiCredentials(chatId);
-      const riskPct = creds.settings.defaultRisk !== undefined ? creds.settings.defaultRisk : 1;
-      const useNews    = creds.settings.useNews === true;
-      const useSent    = creds.settings.useSentimentFilter === true;
-      const useMtf     = creds.settings.useMultiTf === true;
-      const leverage   = creds.settings.leverage || 10;
-      const hasBybit   = Boolean(creds.bybit?.apiKey);
-      const hasBinance = Boolean(creds.binance?.apiKey);
-      const defaultCex = creds.settings.defaultCex || 'bybit';
-      const useMl      = creds.settings.useMlIntervention === true;
-      const thresholdPct = creds.settings.thresholdPct !== undefined ? creds.settings.thresholdPct : 5;
-      const inlineSettings = {
-        reply_markup: {
-          inline_keyboard: [
-            [
-              { text: hasBybit ? '✅ Bybit API' : '🔑 Set Bybit API',   callback_data: 'setting|api_bybit' },
-              { text: hasBinance ? '✅ Binance API' : '🔑 Set Binance API', callback_data: 'setting|api_binance' }
-            ],
-            [
-              { text: `💠 Default CEX: ${defaultCex.toUpperCase()}`, callback_data: 'setting|default_cex' }
-            ],
-             [{ text: `==== CEX Setting ====`, callback_data: 'setting|botx'}],
-            [{ text: `⚙️ Entry Size %: ${riskPct}%`, callback_data: 'setting|risk' }],
-            [{ text: `⚡ Leverage: ${leverage}×`, callback_data: 'setting|leverage' }],
-            [{ text: `🔔 Threshold PnL: ${thresholdPct}%`, callback_data: 'setting|threshold' }],
-            [{ text: `==== Trading Setting ====`, callback_data: 'setting|botx'}],
-            [{ text: `🔔 Sentiment Filter: ${useSent ? 'On' : 'Off'}`, callback_data: 'setting|sentiment' }],
-            [{ text: `🔄 Konfirmasi Multi-TF: ${useMtf ? 'On' : 'Off'}`, callback_data: 'setting|multitf' }],
-            [{ text: `🤖 AI Intervention: ${useMl ? 'On' : 'Off'}`, callback_data: 'setting|ml_intervention' }],
-            [{ text: `📰 News Update: ${useNews ? 'On' : 'Off'}`, callback_data: 'setting|news' }]
-            
-          ]
-        }
-      };
-
-      return bot.sendMessage(
-        chatId,
-        '🔧 Pengaturan trading-mu:\n' +
-        '_Atur preferensi risiko, filter berita, dan strategi otomatis di bawah ini._\n\n' +
-        '⚠️ _Trading berisiko tinggi. Pastikan setting sudah sesuai profil kamu._',
-        {
-          parse_mode: 'Markdown',
-          reply_markup: inlineSettings.reply_markup
-        }
-      );
-    }
+    case '⚙️ Settings':
+      return showSettingsMenu(chatId);
     case '❔ Help':
       return bot.emit('message', { chat: msg.chat, text: '/help' });
     case '📌 Dashboard':
@@ -1920,3 +1951,7 @@ bot.onText(/\/history(?:\s+(\w+))?(?:\s+(\d+))?/, async (msg, match) => {
 });
 
 
+
+
+// Command /settings - show settings menu
+bot.onText(/\/settings/, async (msg) => showSettingsMenu(msg.chat.id));
