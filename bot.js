@@ -1,3 +1,41 @@
+// ===== Auto Trading Defaults =====
+const POPULAR_PAIRS = [
+  'BTC/USDT','ETH/USDT','SOL/USDT','BNB/USDT','XRP/USDT',
+  'ADA/USDT','DOGE/USDT','AVAX/USDT','LINK/USDT','TON/USDT'
+];
+
+function buildAutoTradingKeyboard(enabled, activePairs) {
+  return {
+    inline_keyboard: [
+      [
+        { text: `Auto Trading: ${enabled ? '🟢 ON' : '🔴 OFF'}`, callback_data: 'toggle_auto_trading' }
+      ],
+      ...(enabled
+        ? Array.from({ length: Math.ceil(POPULAR_PAIRS.length / 2) }, (_, i) =>
+            POPULAR_PAIRS.slice(i*2, i*2+2).map(pair => ({
+              text: `${activePairs.includes(pair) ? '✅' : '❌'} ${pair}`,
+              callback_data: `toggle_pair|${pair.replace('/', '_')}`
+            }))
+          )
+        : []
+      )
+    ]
+  };
+}
+
+async function showAutoTradingMenu(chatId) {
+  const creds = await getApiCredentials(chatId);
+  const enabled = creds.settings.autoTradingEnabled || false;
+  const activePairs = creds.settings.autoTradingPairs || [];
+  await bot.sendMessage(chatId,
+    '⚙️ *Auto Trading Settings*\n\n' +
+    'Toggle ON to enable automatic scanning and execution on selected pairs.',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: buildAutoTradingKeyboard(enabled, activePairs)
+    }
+  );
+}
 // bot.js
 import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
@@ -16,6 +54,7 @@ import { startLivePnLTracking } from './services/livePnL.js';
 import cron from 'node-cron';
 import Parser from 'rss-parser';
 import { ensembleConfirm } from './riskManager.js';
+
 
 
 // ===== Brand Voice & Emoji Helpers =====
@@ -163,8 +202,18 @@ startLivePnLTracking(bot, liveTrades);
 // Setelah console.log('🚀 Bot jalan pakai long-polling');
 bot.setMyCommands([
   { command: 'dashboard', description: 'Show and pin your dashboard summary' },
-  { command: 'subscribe', description: 'Berlangganan Pro 298rb/bln' }
+  { command: 'subscribe', description: 'Berlangganan Pro 298rb/bln' },
+  { command: 'autotrade', description: 'Configure Auto Trading feature' }
 ]);
+
+// /autotrade command
+bot.onText(/\/autotrade/, async (msg) => {
+  const chatId = msg.chat.id;
+  let allowed = false;
+  await ensurePro(chatId, bot, async () => { allowed = true; });
+  if (!allowed) return;
+  await showAutoTradingMenu(chatId);
+});
 
 // Connect to MongoDB for bot operations
 mongoose.connect(process.env.MONGODB_URI, {
@@ -489,6 +538,7 @@ bot.onText(/\/dashboard|📌 Dashboard/, async (msg) => {
   const riskPct  = creds.settings.defaultRisk !== undefined ? creds.settings.defaultRisk : 1;
   const leverage = creds.settings.leverage || 1;
 
+
   // 4. Ringkasan posisi aktif
   const positions = liveTrades[chatId] || [];
   let posText = positions.length
@@ -497,7 +547,7 @@ bot.onText(/\/dashboard|📌 Dashboard/, async (msg) => {
       ).join('\n')
     : '\nTidak ada posisi aktif.';
 
-  // 5. Bangun dan kirim pesan dashboard
+  // 5. Bangun dan kirim pesan dashboard (tanpa auto trading section)
   const dashMsg =
     formatHeader('info', 'Dashboard') +
     `• Status Pro: ${subStatus}\n` +
@@ -505,12 +555,13 @@ bot.onText(/\/dashboard|📌 Dashboard/, async (msg) => {
     `• Binance Futures: ${binanceFutures}\n` +
     `• Binance Spot: ${binanceSpot}\n` +
     `• Leverage: ${leverage}×\n` +
-    `• Risk: ${riskPct}%` +
+    `• Risk: ${riskPct}%\n` +
     posText +
     formatFooter('info', 'Gunakan /trade untuk melihat posisi.');
 
   await bot.sendMessage(chatId, dashMsg, { parse_mode: 'Markdown' });
 });
+
 
 // Command /help
 bot.onText(/\/help|❔ Help/, (msg) => {
@@ -556,7 +607,8 @@ bot.onText(/\/trade|🚀 Trade/, async (msg) => {
       inline_keyboard: [
         [ { text: '🔍 Positions', callback_data: 'trade|view_positions' } ],
         [ { text: '⏳ History', callback_data: 'history' } ],
-        [ { text: '❌ Close All', callback_data: 'trade|close_all' } ]
+        [ { text: '❌ Close All', callback_data: 'trade|close_all' } ],
+        [ { text: '🤖 Auto Trading', callback_data: 'autotrade_menu' } ]
       ]
     }
   };
@@ -682,8 +734,69 @@ bot.on('callback_query', async (query) => {
     // Guard callback-based features for Pro subscribers
     let allowedCb = false;
     await ensurePro(chatId, bot, async () => { allowedCb = true; });
+
+    // Open Auto Trading settings from Trade menu
+    if (query.data === 'autotrade_menu') {
+      const chatId = query.message.chat.id;
+      // Ensure Pro user
+      let allowed = false;
+      await ensurePro(chatId, bot, async () => { allowed = true; });
+      if (!allowed) return;
+      await showAutoTradingMenu(chatId);
+      return;
+    }
+    // === Auto Trading callback handlers ===
+    if (query.data === 'toggle_auto_trading') {
+      const chatId = query.message.chat.id;
+      const creds = await getApiCredentials(chatId);
+      const prev = creds.settings.autoTradingEnabled || false;
+      const next = !prev;
+      let pairs = creds.settings.autoTradingPairs || [];
+      if (next && pairs.length === 0) {
+        pairs = POPULAR_PAIRS.slice();
+      }
+      if (!next) {
+        pairs = [];
+      }
+      await saveApiCredentials(chatId, 'settings', {
+        ...creds.settings,
+        autoTradingEnabled: next,
+        autoTradingPairs: pairs
+      });
+      await bot.answerCallbackQuery(query.id, { text: `Auto Trading ${next ? 'Activated' : 'Deactivated'}` });
+      // update inline keyboard
+      await bot.editMessageReplyMarkup(
+        buildAutoTradingKeyboard(next, pairs),
+        { chat_id: chatId, message_id: query.message.message_id }
+      );
+      return;
+    }
+
+    if (query.data.startsWith('toggle_pair|')) {
+      const chatId = query.message.chat.id;
+      const pairRaw = query.data.split('|')[1];
+      const pair = pairRaw.replace('_','/');
+      const creds = await getApiCredentials(chatId);
+      const enabled = creds.settings.autoTradingEnabled || false;
+      let pairs = creds.settings.autoTradingPairs || [];
+      if (pairs.includes(pair)) {
+        pairs = pairs.filter(p => p !== pair);
+      } else {
+        pairs.push(pair);
+      }
+      await saveApiCredentials(chatId, 'settings', {
+        ...creds.settings,
+        autoTradingPairs: pairs
+      });
+      await bot.answerCallbackQuery(query.id, { text: `${pairs.includes(pair) ? 'Enabled' : 'Disabled'} ${pair}` });
+      // update inline keyboard
+      await bot.editMessageReplyMarkup(
+        buildAutoTradingKeyboard(enabled, pairs),
+        { chat_id: chatId, message_id: query.message.message_id }
+      );
+      return;
+    }
     await bot.answerCallbackQuery(query.id);
-    // Handle history pagination
     // Handle history pagination
     if (query.data.startsWith('history|page|')) {
       const [ , , pageStr, period ] = query.data.split('|');
@@ -1730,10 +1843,24 @@ bot.on('callback_query', async (query) => {
         }
       };
 
-      await bot.editMessageReplyMarkup(inlineKeyboard.reply_markup, {
-        chat_id: chatId,
-        message_id: query.message.message_id
-      });
+      try {
+        await bot.editMessageReplyMarkup(inlineKeyboard.reply_markup, {
+          chat_id: chatId,
+          message_id: query.message.message_id
+        });
+      } catch (e) {
+        // Ignore harmless Telegram 'message is not modified' errors
+        if (
+          e.response &&
+          e.response.body &&
+          typeof e.response.body.description === 'string' &&
+          e.response.body.description.includes('message is not modified')
+        ) {
+          console.info('[INFO] Telegram: No changes to reply markup, ignoring update.');
+        } else {
+          console.error('editMessageReplyMarkup error:', e);
+        }
+      }
       return;
     }
   } catch (e) {

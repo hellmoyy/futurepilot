@@ -13,7 +13,9 @@ const userSchema = new mongoose.Schema({
   defaultTimeframe:  { type: String,  default: '1h' },
   leverage:          { type: Number,  default: 10 },
   useMlIntervention: { type: Boolean, default: false },
-  mlThreshold:       { type: Number,  default: 0.8 }
+  mlThreshold:       { type: Number,  default: 0.8 },
+  autoTradingEnabled: { type: Boolean, default: false },
+  autoTradingPairs:   { type: [String], default: [] }
 });
 const User = mongoose.models.User || mongoose.model('User', userSchema);
 
@@ -93,7 +95,9 @@ export async function getApiCredentials(chatId) {
       defaultRisk:       user.defaultRisk ?? 1,
       defaultTimeframe:  user.defaultTimeframe ?? '1h',
       useMlIntervention: user.useMlIntervention ?? false,
-      mlThreshold:       user.mlThreshold   ?? 0.8
+      mlThreshold:       user.mlThreshold   ?? 0.8,
+      autoTradingEnabled: user.autoTradingEnabled ?? false,
+      autoTradingPairs:   user.autoTradingPairs   ?? [],
     }
   };
 }
@@ -148,4 +152,27 @@ export async function getTradeHistoryByPeriod(chatId, period, page = 0, pageSize
     .skip(page * pageSize)
     .limit(pageSize)
     .lean();
+}
+
+/**
+ * Fetch all users with autoTradingEnabled setting, returning their chatId and settings.
+ * @param {{ autoTradingEnabled?: boolean }} filter
+ * @returns {Promise<Array<{ chatId: number, settings: Object }>>}
+ */
+export async function getApiCredentialsForAllUsers(filter) {
+  const query = {};
+  if (filter && typeof filter.autoTradingEnabled === 'boolean') {
+    query['settings.autoTradingEnabled'] = filter.autoTradingEnabled;
+  }
+  // Use the User model to query chatId and settings
+  const users = await User.find(query).select('chatId settings').lean();
+  return users.map(u => ({
+    chatId: u.chatId,
+    settings: u.settings || {},
+  }));
+}
+
+
+export async function getUserByChatId(chatId) {
+  return await User.findOne({ chatId }).lean();
 }
